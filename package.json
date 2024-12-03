@@ -6,7 +6,7 @@
   "scripts": {
     "generate-virtuals": "node src/virtuals/GenerateCharacter.js",
     "twitter": "node src/twitter/index.js",
-    "blog": "node src/blog/blogScrape.js",
+    "blog": "node src/blog/scrapeBlogs.js",
     "character": "node src/character/GenerateCharacter.js",
     "finetune": "node ./scripts/finetune.js",
     "finetune:test": "node ./scripts/finetune.js --test"
