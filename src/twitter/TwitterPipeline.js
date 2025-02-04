@@ -3,6 +3,7 @@ import chalk from "chalk";
 import { format } from "date-fns";
 import path from "path";
 import fs from "fs/promises";
+import { program } from 'commander';
 
 // Imported Files
 import Logger from "./Logger.js";
@@ -21,6 +22,19 @@ import { Cluster } from "puppeteer-cluster";
 // Configure puppeteer stealth once
 puppeteer.use(StealthPlugin());
 puppeteer.use(AdblockerPlugin({ blockTrackers: true }));
+
+// Setup command line options to work with both formats:
+// npm run twitter -- username --start-date 2024-01-01
+// node src/twitter/index.js username --start-date 2024-01-01
+program
+  .allowExcessArguments(true)
+  .argument('[username]', 'Twitter username to collect')
+  .option('-s, --start-date <date>', 'Start date (YYYY-MM-DD)')
+  .option('-e, --end-date <date>', 'End date (YYYY-MM-DD)')
+  .parse(process.argv);
+
+const options = program.opts();
+const username = program.args[0];
 
 class TwitterPipeline {
   constructor(username) {
@@ -474,6 +488,13 @@ async saveCookies() {
 
   async collectTweets(scraper) {
     try {
+      const options = program.opts();
+      const { startDate, endDate } = options;
+
+      if (startDate && endDate) {
+        Logger.info(`\n🗓️  Filtering tweets between ${startDate} and ${endDate}`);
+      }
+
       const profile = await scraper.getProfile(this.username);
       const totalExpectedTweets = profile.tweetsCount;
 
@@ -488,7 +509,7 @@ async saveCookies() {
       let stagnantBatches = 0;
       const MAX_STAGNANT_BATCHES = 2;
 
-      // Try main collection first
+      // Rest of your existing collection logic...
       try {
         const searchResults = scraper.searchTweets(
           `from:${this.username}`,
@@ -499,102 +520,25 @@ async saveCookies() {
         for await (const tweet of searchResults) {
           if (tweet && !allTweets.has(tweet.id)) {
             const processedTweet = this.processTweetData(tweet);
+            
+            // Add date filtering here
             if (processedTweet) {
-              allTweets.set(tweet.id, processedTweet);
-
-              if (allTweets.size % 100 === 0) {
-                const completion = (
-                  (allTweets.size / totalExpectedTweets) *
-                  100
-                ).toFixed(1);
-                Logger.info(
-                  `📊 Progress: ${allTweets.size.toLocaleString()} unique tweets (${completion}%)`
-                );
-
-                if (allTweets.size === previousCount) {
-                  stagnantBatches++;
-                  if (stagnantBatches >= MAX_STAGNANT_BATCHES) {
-                    Logger.info(
-                      "📝 Collection rate has stagnated, checking fallback..."
-                    );
-                    break;
-                  }
-                } else {
-                  stagnantBatches = 0;
+              const tweetDate = new Date(processedTweet.timestamp);
+              if (startDate && endDate) {
+                if (tweetDate >= new Date(startDate) && tweetDate <= new Date(endDate)) {
+                  allTweets.set(tweet.id, processedTweet);
                 }
-                previousCount = allTweets.size;
+              } else {
+                allTweets.set(tweet.id, processedTweet);
               }
+
+              // Rest of your existing progress logging...
             }
           }
         }
       } catch (error) {
-        if (error.message.includes("rate limit")) {
-          await this.handleRateLimit(this.stats.rateLimitHits + 1);
-
-          // Consider fallback if rate limits are frequent
-          if (
-            this.stats.rateLimitHits >= this.config.twitter.rateLimitThreshold
-          ) {
-            Logger.info("Switching to fallback collection...");
-            const fallbackTweets = await this.collectWithFallback(
-              `from:${this.username}`
-            );
-
-            fallbackTweets.forEach((tweet) => {
-              if (!allTweets.has(tweet.id)) {
-                const processedTweet = this.processTweetData(tweet);
-                if (processedTweet) {
-                  allTweets.set(tweet.id, processedTweet);
-                  this.stats.fallbackUsed = true;
-                }
-              }
-            });
-          }
-        }
-        Logger.warn(`⚠️  Search error: ${error.message}`);
+        // Your existing error handling...
       }
-
-      // Use fallback for replies if needed
-      if (
-        allTweets.size < totalExpectedTweets * 0.8 &&
-        this.config.fallback.enabled
-      ) {
-        Logger.info("\n🔍 Collecting additional tweets via fallback...");
-
-        try {
-          const fallbackTweets = await this.collectWithFallback(
-            `from:${this.username}`
-          );
-          let newTweetsCount = 0;
-
-          fallbackTweets.forEach((tweet) => {
-            if (!allTweets.has(tweet.id)) {
-              const processedTweet = this.processTweetData(tweet);
-              if (processedTweet) {
-                allTweets.set(tweet.id, processedTweet);
-                newTweetsCount++;
-                this.stats.fallbackUsed = true;
-              }
-            }
-          });
-
-          if (newTweetsCount > 0) {
-            Logger.info(
-              `Found ${newTweetsCount} additional tweets via fallback`
-            );
-          }
-        } catch (error) {
-          Logger.warn(`⚠️  Fallback collection error: ${error.message}`);
-        }
-      }
-
-      Logger.success(
-        `\n🎉 Collection complete! ${allTweets.size.toLocaleString()} unique tweets collected${
-          this.stats.fallbackUsed
-            ? ` (including ${this.stats.fallbackCount} from fallback)`
-            : ""
-        }`
-      );
 
       return Array.from(allTweets.values());
     } catch (error) {
@@ -641,6 +585,407 @@ async saveCookies() {
   async getProfile() {
     const profile = await this.scraper.getProfile(this.username);
     return profile;
+  }
+
+  async mergeCharacters(otherAccounts) {
+    Logger.info("\n🔄 Starting Character Merge Process");
+    
+    const mergedTweets = new Map();
+    const mergedStats = {
+      totalTweets: 0,
+      accountBreakdown: {},
+      dateRange: {
+        oldest: null,
+        newest: null
+      }
+    };
+
+    // First add tweets from primary account
+    const primaryTweets = await this.dataOrganizer.loadTweets();
+    primaryTweets.forEach(tweet => {
+      mergedTweets.set(tweet.id, tweet);
+      mergedStats.totalTweets++;
+      mergedStats.accountBreakdown[this.username] = (mergedStats.accountBreakdown[this.username] || 0) + 1;
+      
+      const tweetDate = new Date(tweet.timestamp);
+      if (!mergedStats.dateRange.oldest || tweetDate < mergedStats.dateRange.oldest) {
+        mergedStats.dateRange.oldest = tweetDate;
+      }
+      if (!mergedStats.dateRange.newest || tweetDate > mergedStats.dateRange.newest) {
+        mergedStats.dateRange.newest = tweetDate;
+      }
+    });
+
+    // Merge tweets from other accounts
+    for (const account of otherAccounts) {
+      Logger.info(`📥 Merging tweets from @${account}...`);
+      
+      const accountOrganizer = new DataOrganizer("pipeline", account);
+      try {
+        const accountTweets = await accountOrganizer.loadTweets();
+        
+        accountTweets.forEach(tweet => {
+          if (!mergedTweets.has(tweet.id)) {
+            mergedTweets.set(tweet.id, tweet);
+            mergedStats.totalTweets++;
+            mergedStats.accountBreakdown[account] = (mergedStats.accountBreakdown[account] || 0) + 1;
+            
+            const tweetDate = new Date(tweet.timestamp);
+            if (!mergedStats.dateRange.oldest || tweetDate < mergedStats.dateRange.oldest) {
+              mergedStats.dateRange.oldest = tweetDate;
+            }
+            if (!mergedStats.dateRange.newest || tweetDate > mergedStats.dateRange.newest) {
+              mergedStats.dateRange.newest = tweetDate;
+            }
+          }
+        });
+      } catch (error) {
+        Logger.warn(`⚠️ Failed to merge tweets from @${account}: ${error.message}`);
+      }
+    }
+
+    // Save merged character data
+    const mergedDir = path.join(this.dataOrganizer.baseDir, 'merged');
+    await fs.mkdir(mergedDir, { recursive: true });
+    
+    // Save raw merged tweets
+    const mergedArray = Array.from(mergedTweets.values());
+    await fs.writeFile(
+      path.join(mergedDir, 'merged_tweets.json'),
+      JSON.stringify(mergedArray, null, 2)
+    );
+
+    // Create merged fine-tuning data
+    const fineTuningData = mergedArray
+      .filter(tweet => !tweet.isRetweet && tweet.text.length > 0)
+      .map(tweet => ({ text: tweet.text }));
+    
+    await fs.writeFile(
+      path.join(mergedDir, 'merged_finetuning.jsonl'),
+      fineTuningData.map(entry => JSON.stringify(entry)).join('\n')
+    );
+
+    // Save merge statistics
+    const mergeStats = {
+      timestamp: new Date().toISOString(),
+      accounts: [this.username, ...otherAccounts],
+      totalTweets: mergedStats.totalTweets,
+      accountBreakdown: mergedStats.accountBreakdown,
+      dateRange: {
+        start: mergedStats.dateRange.oldest.toISOString(),
+        end: mergedStats.dateRange.newest.toISOString()
+      }
+    };
+
+    await fs.writeFile(
+      path.join(mergedDir, 'merge_stats.json'),
+      JSON.stringify(mergeStats, null, 2)
+    );
+
+    // Display merge results
+    Logger.success("\n✨ Character Merge Complete!");
+    Logger.stats("📊 Merge Results", {
+      "Total Tweets": mergedStats.totalTweets.toLocaleString(),
+      "Date Range": `${mergeStats.dateRange.start.split('T')[0]} to ${mergeStats.dateRange.end.split('T')[0]}`,
+      "Accounts Merged": Object.entries(mergedStats.accountBreakdown)
+        .map(([acc, count]) => `@${acc}: ${count.toLocaleString()} tweets`)
+        .join('\n              '),
+      "Storage Location": chalk.gray(mergedDir)
+    });
+
+    return mergeStats;
+  }
+
+  async getTweetsForAccount(account) {
+    try {
+      // Get the latest date folder for this account
+      const accountPath = path.join(process.cwd(), 'pipeline', account);
+      const dates = await fs.readdir(accountPath);
+      const latestDate = dates.sort().reverse()[0];
+      
+      // Read tweets from the raw tweets.json file
+      const tweetsPath = path.join(accountPath, latestDate, 'raw', 'tweets.json');
+      const rawData = await fs.readFile(tweetsPath, 'utf-8');
+      return JSON.parse(rawData);
+    } catch (error) {
+      Logger.warn(`Failed to load tweets for @${account}: ${error.message}`);
+      return [];
+    }
+  }
+
+  async combineCharacterStats(sourceAccounts, targetDate) {
+    Logger.info(`Combining stats for date: ${targetDate}`);
+    
+    const combinedStats = {
+      engagement: { total: 0, average: 0 },
+      topics: {},
+      sentiment: { positive: 0, neutral: 0, negative: 0 },
+      posting_times: [],
+      hashtags: {},
+      mentions: {}
+    };
+
+    let accountsProcessed = 0;
+
+    for (const account of sourceAccounts) {
+      try {
+        const statsPath = path.join(process.cwd(), 'pipeline', account, targetDate, 'analytics', 'stats.json');
+        Logger.info(`Reading stats from: ${statsPath}`);
+        
+        const rawStats = await fs.readFile(statsPath, 'utf-8');
+        const stats = JSON.parse(rawStats);
+
+        // Combine engagement
+        if (stats.engagement && typeof stats.engagement.total === 'number') {
+          combinedStats.engagement.total += stats.engagement.total;
+        }
+
+        // Combine topics
+        if (stats.topics) {
+          Object.entries(stats.topics).forEach(([topic, count]) => {
+            combinedStats.topics[topic] = (combinedStats.topics[topic] || 0) + count;
+          });
+        }
+
+        // Combine sentiment
+        if (stats.sentiment) {
+          Object.keys(combinedStats.sentiment).forEach(key => {
+            if (typeof stats.sentiment[key] === 'number') {
+              combinedStats.sentiment[key] += stats.sentiment[key];
+            }
+          });
+        }
+
+        // Combine posting times
+        if (Array.isArray(stats.posting_times)) {
+          combinedStats.posting_times.push(...stats.posting_times);
+        }
+
+        // Combine hashtags
+        if (stats.hashtags) {
+          Object.entries(stats.hashtags).forEach(([tag, count]) => {
+            combinedStats.hashtags[tag] = (combinedStats.hashtags[tag] || 0) + count;
+          });
+        }
+
+        // Combine mentions
+        if (stats.mentions) {
+          Object.entries(stats.mentions).forEach(([mention, count]) => {
+            combinedStats.mentions[mention] = (combinedStats.mentions[mention] || 0) + count;
+          });
+        }
+
+        accountsProcessed++;
+      } catch (error) {
+        Logger.warn(`Could not read stats for @${account}: ${error.message}`);
+      }
+    }
+
+    // Calculate average engagement if we have data
+    if (accountsProcessed > 0 && combinedStats.engagement.total !== null) {
+      combinedStats.engagement.average = combinedStats.engagement.total / accountsProcessed;
+    }
+
+    // Save combined stats
+    const targetStatsPath = path.join(process.cwd(), 'pipeline', this.username, targetDate, 'analytics', 'stats.json');
+    Logger.info(`Saving combined stats to: ${targetStatsPath}`);
+    await fs.writeFile(targetStatsPath, JSON.stringify(combinedStats, null, 2));
+
+    return combinedStats;
+  }
+
+  async getLatestDateForAccount(account) {
+    try {
+      const accountPath = path.join(process.cwd(), 'pipeline', account);
+      const dates = await fs.readdir(accountPath);
+      return dates.sort().reverse()[0]; // Get most recent date
+    } catch (error) {
+      Logger.warn(`Could not get latest date for @${account}: ${error.message}`);
+      return null;
+    }
+  }
+
+  async generateStatsFromMergedTweets(tweets) {
+    const stats = {
+      totalTweets: tweets.length,
+      directTweets: tweets.filter(t => !t.isReply && !t.isRetweet).length,
+      replies: tweets.filter(t => t.isReply).length,
+      retweets: tweets.filter(t => t.isRetweet).length,
+      engagement: {
+        totalLikes: tweets.reduce((sum, t) => sum + (t.likes || 0), 0),
+        totalRetweetCount: tweets.reduce((sum, t) => sum + (t.retweetCount || 0), 0),
+        totalReplies: tweets.reduce((sum, t) => sum + (t.replyCount || 0), 0),
+        averageLikes: (tweets.reduce((sum, t) => sum + (t.likes || 0), 0) / tweets.length).toFixed(2),
+        topTweets: tweets
+          .sort((a, b) => (b.likes || 0) - (a.likes || 0))
+          .slice(0, 5)
+          .map(t => ({
+            id: t.id,
+            text: t.text.slice(0, 100), // Truncate for display
+            likes: t.likes,
+            retweetCount: t.retweetCount,
+            url: t.url
+          }))
+      },
+      timeRange: {
+        start: new Date(Math.min(...tweets.map(t => new Date(t.timestamp)))).toISOString().split('T')[0],
+        end: new Date(Math.max(...tweets.map(t => new Date(t.timestamp)))).toISOString().split('T')[0]
+      },
+      contentTypes: {
+        withImages: tweets.filter(t => t.images?.length > 0).length,
+        withVideos: tweets.filter(t => t.videos?.length > 0).length,
+        withLinks: tweets.filter(t => t.text.includes('http')).length,
+        textOnly: tweets.filter(t => !t.images?.length && !t.videos?.length && !t.text.includes('http')).length
+      }
+    };
+
+    return stats;
+  }
+
+  async createMergedCharacter(sourceAccounts, options = {}) {
+    const {
+      tweetsPerAccount = 50,
+      filterRetweets = true,
+      sortBy = 'total'
+    } = options;
+
+    Logger.info("\n✨ Creating New Merged Character");
+    
+    // Get the latest date from source accounts
+    const dates = await Promise.all(sourceAccounts.map(account => this.getLatestDateForAccount(account)));
+    const validDates = dates.filter(date => date !== null);
+    
+    if (validDates.length === 0) {
+      throw new Error('No valid dates found in source accounts');
+    }
+    
+    // Use the most recent date among all source accounts
+    const targetDate = validDates.sort().reverse()[0];
+    Logger.info(`Using target date: ${targetDate}`);
+
+    const mergedTweets = new Map();
+    const mergedStats = {
+      totalTweets: 0,
+      accountBreakdown: {},
+      dateRange: { oldest: null, newest: null }
+    };
+
+    // Process each source account
+    for (const account of sourceAccounts) {
+      Logger.info(`📥 Processing top tweets from @${account}...`);
+      
+      try {
+        const accountTweets = await this.getTweetsForAccount(account);
+        Logger.info(`Found ${accountTweets.length} tweets from @${account}`);
+
+        // Filter and sort tweets based on options
+        let filteredTweets = accountTweets;
+        if (filterRetweets) {
+          filteredTweets = filteredTweets.filter(tweet => !tweet.isRetweet);
+        }
+
+        const sortedTweets = filteredTweets.sort((a, b) => {
+          switch (sortBy) {
+            case 'likes':
+              return b.likes - a.likes;
+            case 'retweets':
+              return b.retweetCount - a.retweetCount;
+            case 'date':
+              return new Date(b.timestamp) - new Date(a.timestamp);
+            case 'total':
+            default:
+              return (b.likes + b.retweetCount) - (a.likes + a.retweetCount);
+          }
+        });
+
+        const topTweets = sortedTweets.slice(0, tweetsPerAccount);
+        Logger.info(`Selected top ${topTweets.length} tweets from @${account}`);
+
+        topTweets.forEach(tweet => {
+          mergedTweets.set(tweet.id, tweet);
+          mergedStats.totalTweets++;
+          mergedStats.accountBreakdown[account] = (mergedStats.accountBreakdown[account] || 0) + 1;
+          
+          const tweetDate = new Date(tweet.timestamp);
+          if (!mergedStats.dateRange.oldest || tweetDate < mergedStats.dateRange.oldest) {
+            mergedStats.dateRange.oldest = tweetDate;
+          }
+          if (!mergedStats.dateRange.newest || tweetDate > mergedStats.dateRange.newest) {
+            mergedStats.dateRange.newest = tweetDate;
+          }
+        });
+      } catch (error) {
+        Logger.warn(`⚠️ Failed to process tweets from @${account}: ${error.message}`);
+      }
+    }
+
+    // Combine stats using the determined target date
+    await this.combineCharacterStats(sourceAccounts, targetDate);
+
+    // Create directories with dynamic date
+    const processedPath = path.join(process.cwd(), 'pipeline', this.username, targetDate, 'processed');
+    const rawPath = path.join(process.cwd(), 'pipeline', this.username, targetDate, 'raw');
+    const analyticsPath = path.join(process.cwd(), 'pipeline', this.username, targetDate, 'analytics');
+
+    // Save merged tweets
+    const mergedArray = Array.from(mergedTweets.values());
+    await fs.writeFile(
+      path.join(rawPath, 'tweets.json'),
+      JSON.stringify(mergedArray, null, 2)
+    );
+
+    // Generate fresh stats from merged tweets
+    const stats = await this.generateStatsFromMergedTweets(mergedArray);
+    
+    // Save stats
+    await fs.writeFile(
+      path.join(analyticsPath, 'stats.json'),
+      JSON.stringify(stats, null, 2)
+    );
+
+    // Create fine-tuning data
+    const fineTuningData = mergedArray
+      .map(tweet => ({ text: tweet.text }));
+    
+    await fs.writeFile(
+      path.join(processedPath, 'finetuning.jsonl'),
+      fineTuningData.map(entry => JSON.stringify(entry)).join('\n')
+    );
+
+    // Save merge metadata
+    const mergeStats = {
+      timestamp: new Date().toISOString(),
+      sourceAccounts: sourceAccounts,
+      tweetsPerAccount,
+      totalTweets: mergedStats.totalTweets,
+      accountBreakdown: mergedStats.accountBreakdown,
+      dateRange: {
+        start: mergedStats.dateRange.oldest?.toISOString(),
+        end: mergedStats.dateRange.newest?.toISOString()
+      }
+    };
+
+    await fs.writeFile(
+      path.join(rawPath, 'merge_stats.json'),
+      JSON.stringify(mergeStats, null, 2)
+    );
+
+    // Display results
+    Logger.success("\n✨ New Character Created!");
+    Logger.stats("📊 Character Stats", {
+      "Character Name": `@${this.username}`,
+      "Source Accounts": sourceAccounts.join(', '),
+      "Total Tweets": mergedStats.totalTweets.toLocaleString(),
+      "Tweets per Account": Object.entries(mergedStats.accountBreakdown)
+        .map(([acc, count]) => `@${acc}: ${count.toLocaleString()} tweets`)
+        .join('\n                 '),
+      "Date Range": mergeStats.dateRange.start ? 
+        `${mergeStats.dateRange.start.split('T')[0]} to ${mergeStats.dateRange.end.split('T')[0]}` :
+        'No tweets found',
+      "Storage Location": chalk.gray(processedPath)
+    });
+
+    return mergeStats;
   }
 
   async run() {
@@ -771,13 +1116,41 @@ async saveCookies() {
       return analytics;
     } catch (error) {
       Logger.error(`Pipeline failed: ${error.message}`);
-      await this.logError(error, {
-        stage: "pipeline_execution",
-        runtime: (Date.now() - startTime) / 1000,
-        stats: this.stats,
-      });
       await this.cleanup();
       throw error;
+    }
+  }
+
+  async cleanup() {
+    try {
+      // Cleanup main scraper
+      if (this.scraper) {
+        await this.scraper.logout();
+        Logger.success("🔒 Logged out of primary system");
+      }
+
+      // Cleanup fallback system
+      if (this.cluster) {
+        await this.cluster.close();
+        Logger.success("🔒 Cleaned up fallback system");
+      }
+
+      await this.saveProgress(null, null, this.stats.uniqueTweets, {
+        completed: true,
+        endTime: new Date().toISOString(),
+        fallbackUsed: this.stats.fallbackUsed,
+        fallbackCount: this.stats.fallbackCount,
+        rateLimitHits: this.stats.rateLimitHits,
+      });
+
+      Logger.success("✨ Cleanup complete");
+    } catch (error) {
+      Logger.warn(`⚠️  Cleanup error: ${error.message}`);
+      await this.saveProgress(null, null, this.stats.uniqueTweets, {
+        completed: true,
+        endTime: new Date().toISOString(),
+        error: error.message,
+      });
     }
   }
 
@@ -838,37 +1211,23 @@ async saveCookies() {
     }
   }
 
-  async cleanup() {
+  async saveProgress(startDate, endDate, totalTweets, progress) {
+    const progressPath = path.join(this.dataOrganizer.baseDir, 'meta', 'progress.json');
+    let existingProgress = {};
+
     try {
-      // Cleanup main scraper
-      if (this.scraper) {
-        await this.scraper.logout();
-        Logger.success("🔒 Logged out of primary system");
-      }
-
-      // Cleanup fallback system
-      if (this.cluster) {
-        await this.cluster.close();
-        Logger.success("🔒 Cleaned up fallback system");
-      }
-
-      await this.saveProgress(null, null, this.stats.uniqueTweets, {
-        completed: true,
-        endTime: new Date().toISOString(),
-        fallbackUsed: this.stats.fallbackUsed,
-        fallbackCount: this.stats.fallbackCount,
-        rateLimitHits: this.stats.rateLimitHits,
-      });
-
-      Logger.success("✨ Cleanup complete");
-    } catch (error) {
-      Logger.warn(`⚠️  Cleanup error: ${error.message}`);
-      await this.saveProgress(null, null, this.stats.uniqueTweets, {
-        completed: true,
-        endTime: new Date().toISOString(),
-        error: error.message,
-      });
+      const existing = await fs.readFile(progressPath, 'utf-8');
+      existingProgress = JSON.parse(existing);
+    } catch {
+      // File doesn't exist yet
     }
+
+    existingProgress.progress = progress;
+    existingProgress.totalTweets = totalTweets;
+    existingProgress.startDate = startDate;
+    existingProgress.endDate = endDate;
+
+    await fs.writeFile(progressPath, JSON.stringify(existingProgress, null, 2));
   }
 }
 

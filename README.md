@@ -30,11 +30,22 @@ Pipeline for generating AI character files and training datasets by scraping pub
 
 ## Usage
 
-### Twitter Collection
+### Twitter Collection 
 ```bash
 npm run twitter -- username
 ```
 Example: `npm run twitter -- pmarca`
+
+### Collection with date range
+```bash
+npm run twitter -- username --start-date 2025-01-01 --end-date 2025-01-31
+```    
+
+### Merge Characters
+```bash
+npm run merge-characters -- new-character-name character1 character2
+```
+Example: `npm run merge-characters -- cobiedart cobie-2025-01-29 satsdart-2025-01-29`
 
 ### Blog Collection
 ```bash
@@ -70,3 +81,12 @@ Example without date: `npm run generate-virtuals -- pmarca`
 
 The generated character file will be in the `pipeline/[username]/[date]/character/character.json` directory.
 The generated tweet dataset file will be in `pipeline/[username]/[date]/raw/tweets.json`.
+
+### Generate Merged Character
+```bash
+npm run generate-merged-virtuals -- username date
+```
+Example: `npm run generate-merged-virtuals -- pmarca 2024-11-29`
+
+The generated merged character file will be in `pipeline/[username]/[date]/character/merged_character.json` directory.
+§

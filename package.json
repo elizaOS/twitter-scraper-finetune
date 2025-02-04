@@ -9,7 +9,9 @@
     "blog": "node src/blog/blogScrape.js",
     "character": "node src/character/GenerateCharacter.js",
     "finetune": "node ./scripts/finetune.js",
-    "finetune:test": "node ./scripts/finetune.js --test"
+    "finetune:test": "node ./scripts/finetune.js --test",
+    "merge-characters": "node src/twitter/merge_characters.js",
+    "generate-merged-virtuals": "node src/virtuals/GenerateMergedCharacter.js"
   },
   "keywords": [],
   "author": "dreaminglucid",
@@ -21,6 +23,7 @@
     "chalk": "^5.3.0",
     "cheerio": "^1.0.0",
     "cli-table3": "^0.6.5",
+    "commander": "^13.1.0",
     "date-fns": "^4.1.0",
     "dotenv": "^16.4.5",
     "fs": "^0.0.1-security",
